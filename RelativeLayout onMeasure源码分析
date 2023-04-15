@@ -1,0 +1,142 @@
+Android RelativeLayout 性能总结
+一、 RelativeLayout
+
+1.onLayout 方法很简单
+ @Override
+    protected void onLayout(boolean changed, int l, int t, int r, int b) {
+        //  The layout has actually already been performed and the positions
+        //  cached.  Apply the cached values to the children.
+        final int count = getChildCount();
+
+        for (int i = 0; i < count; i++) {
+            View child = getChildAt(i);
+            if (child.getVisibility() != GONE) {
+                RelativeLayout.LayoutParams st =
+                        (RelativeLayout.LayoutParams) child.getLayoutParams();
+                child.layout(st.mLeft, st.mTop, st.mRight, st.mBottom);
+            }
+        }
+    }
+2. onMeasure
+
+  /// 1. sortChildren
+ if (mDirtyHierarchy) {
+            mDirtyHierarchy = false;
+            sortChildren();
+ }
+ /// 拓扑排序
+ private void sortChildren() {
+        final int count = getChildCount();
+        /// vertical 方向的排序
+        if (mSortedVerticalChildren == null || mSortedVerticalChildren.length != count) {
+            mSortedVerticalChildren = new View[count];
+        }
+        /// horizontal 方向的排序
+        if (mSortedHorizontalChildren == null || mSortedHorizontalChildren.length != count) {
+            mSortedHorizontalChildren = new View[count];
+        }
+
+        final DependencyGraph graph = mGraph;
+        graph.clear();
+
+        for (int i = 0; i < count; i++) {
+            graph.add(getChildAt(i));
+        }
+
+        graph.getSortedViews(mSortedVerticalChildren, RULES_VERTICAL);
+        graph.getSortedViews(mSortedHorizontalChildren, RULES_HORIZONTAL);
+    }
+    
+    
+    2. // Record our dimensions if they are known;
+        if (widthMode != MeasureSpec.UNSPECIFIED) {
+            myWidth = widthSize;
+        }
+
+        if (heightMode != MeasureSpec.UNSPECIFIED) {
+            myHeight = heightSize;
+        }
+
+        if (widthMode == MeasureSpec.EXACTLY) {
+            width = myWidth;
+        }
+
+        if (heightMode == MeasureSpec.EXACTLY) {
+            height = myHeight;
+        }
+        
+   3. /// measure horizontally
+      View[] views = mSortedHorizontalChildren;
+        int count = views.length;
+
+        for (int i = 0; i < count; i++) {
+            View child = views[i];
+            if (child.getVisibility() != GONE) {
+                LayoutParams params = (LayoutParams) child.getLayoutParams();
+                int[] rules = params.getRules(layoutDirection);
+
+                applyHorizontalSizeRules(params, myWidth, rules);
+                measureChildHorizontal(child, params, myWidth, myHeight);
+
+                if (positionChildHorizontal(child, params, myWidth, isWrapContentWidth)) {
+                    offsetHorizontalAxis = true;
+                }
+            }
+        }
+        
+  4./// measure vertically
+          views = mSortedVerticalChildren;
+        count = views.length;
+        final int targetSdkVersion = getContext().getApplicationInfo().targetSdkVersion;
+
+        for (int i = 0; i < count; i++) {
+            final View child = views[i];
+            if (child.getVisibility() != GONE) {
+                final LayoutParams params = (LayoutParams) child.getLayoutParams();
+
+                applyVerticalSizeRules(params, myHeight, child.getBaseline());
+                measureChild(child, params, myWidth, myHeight);
+                if (positionChildVertical(child, params, myHeight, isWrapContentHeight)) {
+                    offsetVerticalAxis = true;
+                }
+
+                if (isWrapContentWidth) {
+                    if (isLayoutRtl()) {
+                        if (targetSdkVersion < Build.VERSION_CODES.KITKAT) {
+                            width = Math.max(width, myWidth - params.mLeft);
+                        } else {
+                            width = Math.max(width, myWidth - params.mLeft + params.leftMargin);
+                        }
+                    } else {
+                        if (targetSdkVersion < Build.VERSION_CODES.KITKAT) {
+                            width = Math.max(width, params.mRight);
+                        } else {
+                            width = Math.max(width, params.mRight + params.rightMargin);
+                        }
+                    }
+                }
+
+                if (isWrapContentHeight) {
+                    if (targetSdkVersion < Build.VERSION_CODES.KITKAT) {
+                        height = Math.max(height, params.mBottom);
+                    } else {
+                        height = Math.max(height, params.mBottom + params.bottomMargin);
+                    }
+                }
+
+                if (child != ignore || verticalGravity) {
+                    left = Math.min(left, params.mLeft - params.leftMargin);
+                    top = Math.min(top, params.mTop - params.topMargin);
+                }
+
+                if (child != ignore || horizontalGravity) {
+                    right = Math.max(right, params.mRight + params.rightMargin);
+                    bottom = Math.max(bottom, params.mBottom + params.bottomMargin);
+                }
+            }
+        }
+        
+        
+       耗时的主要原因，horizontal 和 vertical两个方向的measure（子View 要measure ，并在onMeasure阶段确定子View的位置）
+       总结 RelativeLayout的onLayout 并不耗时，onMeasure非常耗时
+
