@@ -67,7 +67,7 @@ module拿到所有依赖的R.txt 后，会根据当前module的本地资源，�
    int string string_from_lib2 0x7f140003
 AGP分配了一个 临时的id
 
-最后会根据这个R.txt 生成一个 compileOnly的R.txt
+最后会根据这个R.txt 生成一个 compileOnly的R.java
 
 最终在APK生成的时候，通过AAPT生成R.java
  com.example.app.R.java
