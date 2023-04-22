@@ -1,0 +1,25 @@
+1. R内联？
+R的内联指的时在编译的时候，将对资源的引用改为常量
+2. module/aar中的R.java
+在打包的classes.jar中，没有R.java,所以module/aar中的R.java是一个compileOnly的概念，所有的R.java，最终都是在apk构建时生成的。
+3. app和module中对R.id的引用有什么区别？
+app:
+  const p1, 0x7f03003
+  .line12
+  invoke-virtual {p0,p1}, Lcom/example/testapplication/MainActivity;->getString(I)Ljava/lang/String;
+可见app 中对R的引用时内联的
+module：
+    
+   .line12
+   sget p1, Lcom/example/lib2/R$layout;->activity_in_lib
+   invoke-virtual {p0,p1}, Lcom/example/lib2/ActvitiyInLib2;->setContentView(I)V
+ 可见module中并没有内联，而是运行时查找变量的方式去获取。
+4. 为什么module中不内联？
+module/aar编译时会有一个临时的、compileOnly的R.java文件生成，临时的R.java文件中的id并不是final的（防止javac时内联）。 编译后的classes.jar
+中并没有R.java 的类。在实际apk 构建时，会创建真正的com.example.lib.R.java。
+5.优化？
+我们可以在编译之后将module里对R的引用内联，这样就可以少一次内存寻址，也可以删掉被内联后的R.class, 减少包体积。 AGP 4.1.0 的实现
+R8 编译器 通过minifyWithR8 进行内联，并且混淆规则去掉
+-keepclassmembers **.R$*{
+  public static <*
+ }
