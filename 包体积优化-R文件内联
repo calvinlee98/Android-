@@ -1,0 +1,77 @@
+AGP 3.6.0
+The Android Gradle plugin simplifies the compile classpath by generating only one R class for each library module in your project and sharing those R classes with other module dependencies. This optimization should result in faster builds, but it requires that you keep the following in mind:
+
+Because the compiler shares R classes with upstream module dependencies, it’s important that each module in your project uses a unique package name.
+The visibility of a library's R class to other project dependencies is determined by the configuration used to include the library as a dependency. For example, if Library A includes Library B as an 'api' dependency, Library A and other libraries that depend on Library A have access to Library B's R class. However, other libraries might not have access to Library B's R class If Library A uses the implementation dependency configuration. To learn more, read about dependency configurations.
+
+翻译：每个Module直接生成R.class，在3.6.0之前是生成R.java -> 再通过javac生成R.class  省去了R.java 的生成和R.java 的编译
+
+原先生成的R.java 在generated/not_namespaced_r_class_sources下
+现在在intermediates/compile_and_runtime_not_namespaced_r_class_jar下面只有R.class
+
+AGP 4.1.0
+Starting from this release， fields from R classes are no longer kept by default, which may result in significatn APK size savings for apps
+that enable code shrinking,. This should not result in a behavior change unless you are accessing R classes by reflection, in which case it 
+is necessary to add keep rules for those R classes.
+
+从AGP 4.1.0之后开始，aapt在包体积上做了优化。不再保留R的keep规则，也就是app中不再包括R文件。
+
+
+R 冗余问题
+apk打包的过程中，会为每个module生成R.java 
+          app
+         /    \
+       biz1    biz2
+      /    \   /     \
+     lib1   lib2     lib3
+ 
+ R_lib1 = R_lib1
+ R_lib2 = R_lib2
+ R_lib3 = R_lib3
+ R_biz1 = R_lib1+R_lib2+R_biz1
+ R_biz2 = R_biz1+R_lib2+R_lib3
+ ....
+ R_app = R_app + R_biz1 + R_biz2 + R_lib1 + R_lib2 + R_lib3
+ 在最终达成apk的时候，除了R_app（因为app中的R是常量，在javac过程中会被内联，所以打release混淆时，app的R文件会被混淆），其余R文件会全部被打进apk包中。
+ 这就是apk中R文件冗余的由来。  如果项目依赖层次越多，上层的业务组件越多，将会导致apk中的R文件急剧的膨胀。
+ 
+ 来一个例子，如果在一个module中，我们通过compileOnly 在编译期依赖 constraintlayout，并且在xml中直接引用了constraintlayout.aar中的资源，能通过编译么？
+ 答案是不能，因为这个时候我们并没有实际依赖constraintlayout， 所以在这个模块的R.java 中，也不会有来自constraintlayout.aar 的资源id，并且在aar中，没有R.class，
+ 所以根本引用不到constraintlayout中的资源，只能通过api / implementation，将constraintlayout.aar中的资源加入到这个这个模块的R.txt中，这样生成的临时的
+ R.txt文件中才会有来自constraintlayout的id，生成的临时的R.java 也会有这个id，这样才能过编译。
+ 
+ AGP 4.1.0 R文件内联
+ buildTypes{
+    release{ 
+        minifyEnabled true
+        proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+    }
+ }
+ 
+ AGP 3.6.0
+ dex:
+     .line2
+     sget p1,Lcom/example/lib/R$layout;->activity_main:I
+     invoke-virtual {p0,p1}, Landroidx/appcompat/AppCompatActivity;->setContentView
+ 并且生成了
+     com/example/lib/R$layout
+
+
+AGP 4.1.0
+     const p1, 0x7f0b001c
+     .line2
+     invoke-virtual {p0,p1}, Landroid/appcompat/app/AppCompatActivity;->setContentView
+没有生成
+   com/example/lib/R$layout
+ 
+ AGP 4.1.0 对R文件的内联非常彻底，不但删除了R文件，还把对R文件的引用改成了常量
+ 
+ 实现 Task
+ minifyReleaseWithR8 
+ R8 实际上是Proguard + D8 也就是class 到dex的过程，并在这个过程做了脱糖，Proguard 及 multidex等事情。在R8做shrink和optimize时会将代码中对
+ 常量（final）的引用替换为常量值。 这样代码中就不会再有R文件的引用。 这样在shrink时就会将R文件删除。  当然AGP 4.1.0 也删除了keep规则
+  -keepclassmembers class **.R$* {
+     public static <fields>;
+  }
+     
+ 
