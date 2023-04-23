@@ -1,1 +1,127 @@
+概念 
+ 明确几个概念： Bitmap和图片文件是两码事。 图片文件是.jpg (.jpeg)  .png  .webp 文件， 是bitmap压缩后的产物。 Bitmap就是内存中的位图，本质是一个二维数组，长宽为像素数（pixels），位深为每一位占用的大小。
+Bitmap通过编码得到Bitmap文件  (Bitmap.compress) 
+图片文件通过解码得到Bitmap （BitmapFactory.decode)  
+1. 在调用Bitmap.compress 的时候，如果传入的格式是png， 代表无损压缩，生成的Bitmap文件最大，如果传入的是jpg（jpeg），代表有损压缩， 如果传入webp，会将生成的图片文件压缩的更小（编码时间也就更长）
+2. BitmapFactory.decode 将图片文件解码得到Bitmap。 
 
+● 场景1： 现在内存中有一个Bitmap，我要上传服务端，我需要调用Bitmap.compress， 如果我想追求编码速度，那么我传入的格式参数为.PNG, 如果我追求带宽，那么我传入的格式参数为.WEBP 
+● 场景2：我现在需要对一个内存的Bitmap进行压缩， 需要使用原图作为BitmapShader（着色器），生成一个target Bitmap（制定一个更小的宽高，或者更低的位深），用原图的BitmapShader进行颜色填充。 这样我们就得到了一个更小的Bitmap，然后在绘制这张图片的时候，只需要让ImageView 的ScaleType设置为ScaleType.fit_XY 就可以。
+
+Android 图片编码和解码的操作是通过Skia库完成的 SKCodec 
+具体的实现在libwebp.so  libjpeg-turbo.so  libpng.so  libggifcodec.so 中 （onDecode/ onEncode方法）
+
+SKCodec 图片编码/解码模块  libwebp,libjpeg-turbo, libpng, libgifcodec
+
+
+解码流程
+bool SkImageDecoder::DecodeStream(SkStreamRewindable* stream, SkBitmap* bm, SkColorType pref,
+                                  Mode mode, Format* format) {
+    SkASSERT(stream);
+    SkASSERT(bm);
+
+    bool success = false;
+    /// SkImageDecoder 解码器
+    SkImageDecoder* codec = SkImageDecoder::Factory(stream);
+
+    if (NULL != codec) {
+        success = codec->decode(stream, bm, pref, mode);
+        if (success && format) {
+            *format = codec->getFormat();
+            if (kUnknown_Format == *format) {
+                if (stream->rewind()) {
+                    *format = GetStreamFormat(stream);
+                }
+            }
+        }
+        delete codec;
+    }
+    return success;
+}
+
+bool SkImageDecoder::decode(SkStream* stream, SkBitmap* bm, SkColorType pref, Mode mode) {
+    // we reset this to false before calling onDecode
+    fShouldCancelDecode = false;
+    // assign this, for use by getPrefColorType(), in case fUsePrefTable is false
+    fDefaultPref = pref;
+
+    // pass a temporary bitmap, so that if we return false, we are assured of
+    // leaving the caller's bitmap untouched.
+    SkBitmap    tmp;
+    if (!this->onDecode(stream, &tmp, mode)) {
+        return false;
+    }
+    bm->swap(tmp);
+    return true;
+}
+
+
+Android如何解码图片？
+
+public static Bitmap decodeStream(InputStream is, Rect outPadding, Options opts) {
+    // ...
+    return decodeStreamInternal(is, outPadding, opts);
+}
+
+private static Bitmap decodeStreamInternal(InputStream is, Rect outPadding, Options opts) {
+    // ...
+    // Native 方法
+    byte [] tempStorage = new byte[DECODE_BUFFER_SIZE];
+    return nativeDecodeStream(is, tempStorage, outPadding, opts);
+}
+
+// Path: frameworks/base/core/jni/android/graphics/BitmapFactory.cpp
+
+#include "SkAndroidCodec.h"
+
+static jobject nativeDecodeStream(JNIEnv *env, jobject clazz, jobject is, jbyteArray storage,
+jobject padding, jobject options)
+{
+    // ...
+    return doDecode(env, bufferedStream.release(), padding, options);
+}
+
+static jobject doDecode(JNIEnv *env, SkStreamRewindable *stream, jobject padding, jobject options)
+{
+    // [00] 初始化 Option 默认值, 对应 Java 代码中的 BitmapFactory.Options 结构体
+    // [01] 根据传入的 Options 更新上述值
+    // ...
+    // [02] 创建解码器 (重要)
+    // ...
+    std::unique_ptr<SkAndroidCodec> codec(SkAndroidCodec::NewFromStream(streamDeleter.release(), &peeker));
+    // [03] 输出的图片大小, 根据采样大小, 缩放比例等因素调整 (重要)
+    // ...
+    // [04] 处理复用的 Bitmap, 对应 Java 代码中的 BitmapFactory.Options 中的 inBitmap
+    //      如果有可复用的 Bitmap, 且 isMutable == false 才执行
+    // ...
+    // [05] 创建对应的内存分配器
+    // ...
+    // [06] 输出图片的色彩类型, 根据请求的类型选择最合适的类型 (重要)
+    SkColorType decodeColorType = codec->computeOutputColorType(prefColorType);
+    // [07] 构建色码表, 以便解码时使用
+    // ...
+    // [08] 设置透明度等, 并构造对应的解码器配置
+    // ...
+    // [09] 利用 SkAndroidCodec 完成解码 (重要)
+    //      CPP 中的 Bitmap, 即 decodingBitmap, 在这一步初步成型
+    // ...
+    SkCodec::Result result = codec->getAndroidPixels(
+    decodeInfo,                 // 解码信息 (长度, 宽度, 色彩类型, 透明度等)
+    decodingBitmap.getPixels(), // Bitmap 的实际内存地址, 即像素们的内存地址
+    decodingBitmap.rowBytes(),  // 每一行的大小, 即每一行所有像素的大小
+    &codecOptions);             // 解码器配置 (色码表, 采样大小等)
+    // ...
+
+    // [10] .9.PNG 处理
+    // ...
+
+    // [11] 缩放 decodingBitmap, 实际上可以在上一步解码时同步完成
+    //      放在这里执行主要是为了兼容 Dalvik 虚拟机
+    // ...
+
+    // [12] 设置 padding
+    // ...
+
+    // [13] 将 CPP 中的 Bitmap 转换为 Java 中的 Bitmap, 即生成对应的 jobject
+    // ...
+}
