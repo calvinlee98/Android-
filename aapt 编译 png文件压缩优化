@@ -1,0 +1,11 @@
+PNG图片相对于jpeg来讲，是一种无损压缩格式，并且多了一个alpha通道。所以一般PNG要比jpeg要大。
+
+常用压缩算法
+   Indexed_color: ARGB中每个通道要8位（1byte），4个通道就是32bit（4字节）。而一个索引只需要1字节，索引所指向的颜色存放在palette（数组中） 这就带来了一个问题，通过Indexed_color
+压缩的png图像不能超过256个颜色 （2^8)
+   Color_quantization：颜色矢量化，通过相似颜色来减少使用的颜色类，再配合indexed_color,就可以达到减少文件大小的目的，这也是一种有损压缩。
+   
+AAPT 在编译资源的时候也有压缩PNG的功能， aapt对PNG的压缩，在三个方面
+    RGB是否可以转化成灰度
+    透明通道是否可以删除
+    是不是最多只有256色（Inded
