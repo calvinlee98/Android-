@@ -1,0 +1,281 @@
+MMKV的作用是替代SharedPreferences 
+SharedPreferences的问题
+1. ANR问题 commit 在主线程读写、apply在页面切换的时候也会有ANR的问题
+2. 无法支持多进程
+MMKV基于mmap
+MMKV *MMKV::mmkvWithID(const std::string &mmapID, int size, MMKVMode mode, string *cryptKey) {
+    if (mmapID.empty()) {
+        return nullptr;
+    }
+    SCOPEDLOCK(g_instanceLock);
+
+    auto itr = g_instanceDic->find(mmapID);
+    if (itr != g_instanceDic->end()) {
+        MMKV *kv = itr->second;
+        return kv;
+    }
+    auto kv = new MMKV(mmapID, size, mode, cryptKey);
+    (*g_instanceDic)[mmapID] = kv;
+    return kv;
+}
+
+g_instanceDic 是 Map对象  根据mmapId在g_instanceDic进行查找，如果有直接返回MMKV对象
+
+
+MMKV构造
+ m_mmapId 文件名
+ m_path 文件路径
+MMKV::MMKV(const string &mmapID, MMKVMode mode, string *cryptKey, MMKVPath_t *rootPath)
+    : m_mmapID(mmapID)
+    , m_path(mappedKVPathWithID(m_mmapID, mode, rootPath))
+    , m_crcPath(crcPathWithID(m_mmapID, mode, rootPath))
+    , m_dic(nullptr)
+    , m_dicCrypt(nullptr)
+    , m_file(new MemoryFile(m_path))
+    , m_metaFile(new MemoryFile(m_crcPath))
+    , m_metaInfo(new MMKVMetaInfo())
+    , m_crypter(nullptr)
+    , m_lock(new ThreadLock())
+    , m_fileLock(new FileLock(m_metaFile->getFd()))
+    , m_sharedProcessLock(new InterProcessLock(m_fileLock, SharedLockType))
+    , m_exclusiveProcessLock(new InterProcessLock(m_fileLock, ExclusiveLockType))
+    , m_isInterProcess((mode & MMKV_MULTI_PROCESS) != 0) {
+    m_actualSize = 0;
+    m_output = nullptr;
+
+#    ifndef MMKV_DISABLE_CRYPT
+    if (cryptKey && cryptKey->length() > 0) {
+        m_dicCrypt = new MMKVMapCrypt();
+        m_crypter = new AESCrypt(cryptKey->data(), cryptKey->length());
+    } else {
+        m_dic = new MMKVMap();
+    }
+#    else
+    m_dic = new MMKVMap();
+#    endif
+
+    m_needLoadFromFile = true;
+    m_hasFullWriteback = false;
+
+    m_crcDigest = 0;
+
+    m_lock->initialize();
+    m_sharedProcessLock->m_enable = m_isInterProcess;
+    m_exclusiveProcessLock->m_enable = m_isInterProcess;
+
+}
+
+
+m_file 很关键 MemoryFile.cpp 
+MemoryFile 做的事情包括调用truncate 操作文件大小， 调用mmap等
+/// 构造函数
+MemoryFile::MemoryFile(MMKVPath_t path) : m_diskFile(std::move(path), OpenFlag::ReadWrite | OpenFlag::Create), m_ptr(nullptr), m_size(0) {
+/// reloadFromFile 就会调用truncate和mmap 调用Unix的truncate和mmap
+    reloadFromFile();
+}
+
+size_t File::getActualFileSize() const {
+#    ifdef MMKV_ANDROID
+    if (m_fileType == MMFILE_TYPE_ASHMEM) {
+        return ASharedMemory_getSize(m_fd);
+    }
+#    endif
+    size_t size = 0;
+    mmkv::getFileSize(m_fd, size);
+    return size;
+}
+
+bool MemoryFile::truncate(size_t size) {
+    if (!m_diskFile.isFileValid()) {
+        return false;
+    }
+    if (size == m_size) {
+        return true;
+    }
+#    ifdef MMKV_ANDROID
+    if (m_diskFile.m_fileType == MMFILE_TYPE_ASHMEM) {
+        if (size > m_size) {
+            MMKVError("ashmem %s reach size limit:%zu, consider configure with larger size", m_diskFile.m_path.c_str(), m_size);
+        } else {
+            MMKVInfo("no way to trim ashmem %s from %zu to smaller size %zu", m_diskFile.m_path.c_str(), m_size, size);
+        }
+        return false;
+    }
+#    endif // MMKV_ANDROID
+
+    auto oldSize = m_size;
+    m_size = size;
+    // round up to (n * pagesize)
+    /// mmap 必须是整页大小
+    if (m_size < DEFAULT_MMAP_SIZE || (m_size % DEFAULT_MMAP_SIZE != 0)) {
+        m_size = ((m_size / DEFAULT_MMAP_SIZE) + 1) * DEFAULT_MMAP_SIZE;
+    }
+
+    if (::ftruncate(m_diskFile.m_fd, static_cast<off_t>(m_size)) != 0) {
+        MMKVError("fail to truncate [%s] to size %zu, %s", m_diskFile.m_path.c_str(), m_size, strerror(errno));
+        m_size = oldSize;
+        return false;
+    }
+    if (m_size > oldSize) {
+        if (!zeroFillFile(m_diskFile.m_fd, oldSize, m_size - oldSize)) {
+            MMKVError("fail to zeroFile [%s] to size %zu, %s", m_diskFile.m_path.c_str(), m_size, strerror(errno));
+            m_size = oldSize;
+            return false;
+        }
+    }
+
+    if (m_ptr) {
+        if (munmap(m_ptr, oldSize) != 0) {
+            MMKVError("fail to munmap [%s], %s", m_diskFile.m_path.c_str(), strerror(errno));
+        }
+    }
+    /// truncate file后重新调用mmap
+    auto ret = mmap();
+    if (!ret) {
+        doCleanMemoryCache(true);
+    }
+    return ret;
+}
+/// mmap函数
+bool MemoryFile::mmap() {
+    m_ptr = (char *) ::mmap(m_ptr, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_diskFile.m_fd, 0);
+    if (m_ptr == MAP_FAILED) {
+        MMKVError("fail to mmap [%s], %s", m_diskFile.m_path.c_str(), strerror(errno));
+        m_ptr = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
+//// 回到MMKV 构造函数
+
+void MMKV::loadFromFile() {
+    if (!m_metaFile->isFileValid()) {
+        m_metaFile->reloadFromFile();
+    }
+    if (!m_metaFile->isFileValid()) {
+        MMKVError("file [%s] not valid", m_metaFile->getPath().c_str());
+    } else {
+        m_metaInfo->read(m_metaFile->getMemory());
+    }
+#ifndef MMKV_DISABLE_CRYPT
+    if (m_crypter) {
+        if (m_metaInfo->m_version >= MMKVVersionRandomIV) {
+            m_crypter->resetIV(m_metaInfo->m_vector, sizeof(m_metaInfo->m_vector));
+        }
+    }
+#endif
+    if (!m_file->isFileValid()) {
+        m_file->reloadFromFile();
+    }
+    if (!m_file->isFileValid()) {
+        MMKVError("file [%s] not valid", m_path.c_str());
+    } else {
+        // error checking
+        bool loadFromFile = false, needFullWriteback = false;
+        checkDataValid(loadFromFile, needFullWriteback);
+        MMKVInfo("loading [%s] with %zu actual size, file size %zu, InterProcess %d, meta info "
+                 "version:%u",
+                 m_mmapID.c_str(), m_actualSize, m_file->getFileSize(), m_isInterProcess, m_metaInfo->m_version);
+        auto ptr = (uint8_t *) m_file->getMemory();
+        // loading
+        if (loadFromFile && m_actualSize > 0) {
+            MMKVInfo("loading [%s] with crc %u sequence %u version %u", m_mmapID.c_str(), m_metaInfo->m_crcDigest,
+                     m_metaInfo->m_sequence, m_metaInfo->m_version);
+            MMBuffer inputBuffer(ptr + Fixed32Size, m_actualSize, MMBufferNoCopy);
+            if (m_crypter) {
+                clearDictionary(m_dicCrypt);
+            } else {
+                clearDictionary(m_dic);
+            }
+            if (needFullWriteback) {
+#ifndef MMKV_DISABLE_CRYPT
+                if (m_crypter) {
+                    MiniPBCoder::greedyDecodeMap(*m_dicCrypt, inputBuffer, m_crypter);
+                } else
+#endif
+                {
+                    MiniPBCoder::greedyDecodeMap(*m_dic, inputBuffer);
+                }
+            } else {
+#ifndef MMKV_DISABLE_CRYPT
+                if (m_crypter) {
+                    MiniPBCoder::decodeMap(*m_dicCrypt, inputBuffer, m_crypter);
+                } else
+#endif
+                {
+                /// 这个很重要 
+                /// 传入的是*m_dic 是一个unordered_map& 类型 也就是文件的内存备份
+                    MiniPBCoder::decodeMap(*m_dic, inputBuffer);
+                }
+            }
+            m_output = new CodedOutputData(ptr + Fixed32Size, m_file->getFileSize() - Fixed32Size);
+            m_output->seek(m_actualSize);
+            if (needFullWriteback) {
+                fullWriteback();
+            }
+        } else {
+            // file not valid or empty, discard everything
+            SCOPED_LOCK(m_exclusiveProcessLock);
+
+            m_output = new CodedOutputData(ptr + Fixed32Size, m_file->getFileSize() - Fixed32Size);
+            if (m_actualSize > 0) {
+                writeActualSize(0, 0, nullptr, IncreaseSequence);
+                sync(MMKV_SYNC);
+            } else {
+                writeActualSize(0, 0, nullptr, KeepSequence);
+            }
+        }
+        auto count = m_crypter ? m_dicCrypt->size() : m_dic->size();
+        MMKVInfo("loaded [%s] with %zu key-values", m_mmapID.c_str(), count);
+    }
+
+    m_needLoadFromFile = false;
+}
+
+/// MMKVMap 其实是unordered_map类型
+void MiniPBCoder::decodeOneMap(MMKVMap &dic, size_t position, bool greedy) {
+/// lambda表达式
+    auto block = [position, this](MMKVMap &dictionary) {
+        if (position) {
+            m_inputData->seek(position);
+        } else {
+            m_inputData->readInt32();
+        }
+        while (!m_inputData->isAtEnd()) {
+            KeyValueHolder kvHolder;
+            const auto &key = m_inputData->readString(kvHolder);
+            if (key.length() > 0) {
+                m_inputData->readData(kvHolder);
+                if (kvHolder.valueSize > 0) {
+                    dictionary[key] = move(kvHolder);
+                } else {
+                    auto itr = dictionary.find(key);
+                    if (itr != dictionary.end()) {
+                        dictionary.erase(itr);
+                    }
+                }
+            }
+        }
+    };
+
+    if (greedy) {
+        try {
+            block(dic);
+        } catch (std::exception &exception) {
+            MMKVError("%s", exception.what());
+        }
+    } else {
+        try {
+            MMKVMap tmpDic;
+            block(tmpDic);
+            dic.swap(tmpDic);
+        } catch (std::exception &exception) {
+            MMKVError("%s", exception.what());
+        }
+    }
+}
+
+//// 总结一下  MMKV初始化的时候完成了 1. MemoryFile的初始化，MemoryFile初始化的时候会调用 truncate和mmap 改变文件大小以及调用mmap
+////  调用loadFromFile 将文件中保存的内容同步到内存中 （一个unordered_map)
