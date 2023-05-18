@@ -48,15 +48,15 @@ androidx.recyclerview.R.java
   R文件的生成
   编译的中间产物中，R有以下几种形式
      R.java (compileOnly)
-     R.txt 此project 所有资源列表，并生成了id，最后会根据这个值生成R.java
+     R.txt 此project 所有资源列表，并生成了id，apk打包的时候会根据这个值生成这个Module的R.java
      R-def.txt 记录了此project的本地资源（res下，不包含依赖）
-     package-aware-r.txt（记录了此project的所有资源，没有生成id）
+     package-aware-r.txt（记录了此project的所有资源，包含依赖，没有生成id）
  
  当一个Module生成R.java的时候，首先会拿到所有依赖的R.txt  比如lib1 依赖lib2，lib2 依赖recyclerview-1.0.0.aar，那么lib1会拿到两个R.txt。
     lib2的R.txt已经生成好了
     AAR的R.txt是从AAR中解压出来的
 module拿到所有依赖的R.txt 后，会根据当前module的本地资源，生成package-aware-r.txt
-
+/// package-aware-r.txt 没有id
   com.example.lib1
      layout activit_in_lib2
      string string_from_lib1
