@@ -1,0 +1,129 @@
+Android 项目（或者说gradle 编译项目） 常用的脚本是build.gradle / settings.gradle 
+并且在build.gradle 中，我们也可以通过 apply from: '../xxx.gradle' 把其他的脚本引入进来
+.gradle 文件是基于groovy语法的，而groovy语法本来也是一种JVM语言，它需要编译成.class文件，再由虚拟机解释执行，因此我们可以大概猜出，.gradle文件也是首先需要编译成.class文件，再调用这个.class文件中的方法，才能执行这个
+.gradle 脚本 （如果单纯从脚本的角度看这个文件，很容易认为gradle有一个解释器 顺序读取脚本并执行）
+
+1. build.gradle的编译/执行发生在什么时候？
+DefaultGradleLauncher.java 这个是Gradle生命周期的核心类  编译不过的时候栈底基本上都是这个类  就跟Android主线程的崩溃栈底都是
+ZygoteInit一样
+
+private void doBuildStages(Stage upTo) {
+        Preconditions.checkArgument(
+            upTo != Stage.Finished,
+            "Stage.Finished is not supported by doBuildStages."
+        );
+        try {
+            if (upTo == Stage.RunTasks && instantExecution.canExecuteInstantaneously()) {
+                doInstantExecution();
+            } else {
+            /// 一般走到这
+                doClassicBuildStages(upTo);
+            }
+        } catch (Throwable t) {
+            finishBuild(upTo.getDisplayName(), t);
+        }
+    }
+    
+ private void doClassicBuildStages(Stage upTo) {
+    /// settings
+        prepareSettings();
+        if (upTo == Stage.LoadSettings) {
+            return;
+        }
+        /// configure
+        configureBuild();
+        if (upTo == Stage.Configure) {
+            return;
+        }
+        /// task 图
+        prepareTaskExecution();
+        if (upTo == Stage.TaskGraph) {
+            return;
+        }
+        instantExecution.saveTaskGraph();
+        /// 执行task
+        runTasks();
+   }
+   /// configure build 就是 configure阶段 这个阶段做的事情很简单 就是编译build.gradle 脚本 并执行
+   /// TaskPathProjectEvaluator.java 
+   //// configure是project 维度的 一般project是树状接口 根project 和 子project
+   public void configureHierarchy(ProjectInternal project) {
+        configure(project);
+        for (Project sub : project.getSubprojects()) {
+            configure((ProjectInternal) sub);
+        }
+    }
+    
+    /// 最终调用到ConfigureActionsProjectEvaluator.evaluate
+    /// 这个东西构造的时候传入多个ProjectConfigureAction  evaluate的时候就是把每个Action调用一遍
+ public class ConfigureActionsProjectEvaluator implements ProjectEvaluator {
+    private final List<ProjectConfigureAction> configureActions;
+
+    public ConfigureActionsProjectEvaluator(ProjectConfigureAction... configureActions) {
+        this.configureActions = Arrays.asList(configureActions);
+    }
+
+    public void evaluate(ProjectInternal project, ProjectStateInternal state) {
+        for (ProjectConfigureAction configureAction : configureActions) {
+            configureAction.execute(project);
+        }
+    }
+}
+
+/// 构造 BuildScopeServices.java 
+ConfigureActionsProjectEvaluator withActionsEvaluator = new ConfigureActionsProjectEvaluator(
+            PluginsProjectConfigureActions.from(cachingServiceLocator),
+            new BuildScriptProcessor(scriptPluginFactory),
+            new DelayedConfigurationActions()
+        );
+  2. evaluate 编译+执行build.gradle 脚本 
+  具体的逻辑简单看一下吧 其实大概意思是build.gradle 的编译分成两个阶段（pass）
+  pass1 buildScript { }   plugins { } 的编译
+        
+  // Pass 1, extract plugin requests and plugin repositories and execute buildscript {}, ignoring (i.e. not even compiling) anything else
+
+            Class<? extends BasicScript> scriptType = initialPassScriptTarget.getScriptClass();
+            InitialPassStatementTransformer initialPassStatementTransformer = new InitialPassStatementTransformer(scriptSource, initialPassScriptTarget, documentationRegistry);
+            SubsetScriptTransformer initialTransformer = new SubsetScriptTransformer(initialPassStatementTransformer);
+            /// pass1 的编译产物会有cp_前缀
+            String id = INTERNER.intern("cp_" + initialPassScriptTarget.getId());
+            CompileOperation<PluginRequests> initialOperation = new FactoryBackedCompileOperation<PluginRequests>(id, CLASSPATH_COMPILE_STAGE, initialTransformer, initialPassStatementTransformer, pluginRequestsSerializer);
+
+            ScriptRunner<? extends BasicScript, PluginRequests> initialRunner = compiler.compile(scriptType, initialOperation, baseScope.getExportClassLoader(), Actions.doNothing());
+            initialRunner.run(target, services);
+
+            PluginRequests initialPluginRequests = initialRunner.getData();
+            PluginRequests mergedPluginRequests = autoAppliedPluginHandler.mergeWithAutoAppliedPlugins(initialPluginRequests, target);
+
+            PluginManagerInternal pluginManager = topLevelScript ? initialPassScriptTarget.getPluginManager() : null;
+            pluginRequestApplicator.applyPlugins(mergedPluginRequests, scriptHandler, pluginManager, targetScope);
+
+            // Pass 2, compile everything except buildscript {}, pluginRepositories{}, and plugin requests, then run
+            final ScriptTarget scriptTarget = secondPassTarget(target);
+            scriptType = scriptTarget.getScriptClass();
+
+            BuildScriptTransformer buildScriptTransformer = new BuildScriptTransformer(scriptSource, scriptTarget);
+            String operationId = scriptTarget.getId();
+            CompileOperation<BuildScriptData> operation = new FactoryBackedCompileOperation<BuildScriptData>(operationId, BODY_COMPILE_STAGE, buildScriptTransformer, buildScriptTransformer, buildScriptDataSerializer);
+
+            final ScriptRunner<? extends BasicScript, BuildScriptData> runner = compiler.compile(scriptType, operation, targetScope.getLocalClassLoader(), ClosureCreationInterceptingVerifier.INSTANCE);
+            if (scriptTarget.getSupportsMethodInheritance() && runner.getHasMethods()) {
+                scriptTarget.attachScript(runner.getScript());
+            }
+            if (!runner.getRunDoesSomething()) {
+                return;
+            }
+
+            Runnable buildScriptRunner = new Runnable() {
+                public void run() {
+                    runner.run(target, services);
+                }
+            };
+
+            boolean hasImperativeStatements = runner.getData().getHasImperativeStatements();
+            scriptTarget.addConfiguration(buildScriptRunner, !hasImperativeStatements);  
+ 具体怎么编译的就不关注了 我们就看一下产物的样子
+ 首先 build.gradle 的编译产物也是 gradle cache 的一部分 所以它肯定是在 .gradle/caches 目录下
+ scripts/id/cp_proj  buildScript 编译生成的class
+ proj  除buildScript 编译生成的class
+            
