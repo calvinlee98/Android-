@@ -15,6 +15,9 @@ AAR
 Module
 Application
 
+R.java有两个层面，一个是针对Android Library，一个是针对Android Application。 针对Android Library，aapt在编译的时候会生成一个compileOnly的R.java，这个类只是通过编译，实际并不会编入到AAR（jar）中，
+在APK打包的时候，这个时候生成的才是真正的R.java（或者说R.jar） 每个module 都会根据这个module 的R.txt 文件，生成对应的R.java，并最终打入到一个R.jar中，最终被打入APK。
+
 假设我们有项目结构
    -app
      -lib1
@@ -38,6 +41,7 @@ androidx.recyclerview.R.java
   res目录
   values目录
 再看一下classes.jar 里面并没有R.java
+
 结论1： AAR的R.java并不会打包到classes.jar中，所以最终APK里面的aar.R.java是在APK打包时生成的而不是AAR中带进来的。
 总结：首先我们明确一点，所有R都是在生成APK的时候由AAPT完成。 
   module/aar中临时生成的R.java只是make compiler happy，实际是compileOnly的角色
@@ -48,20 +52,23 @@ androidx.recyclerview.R.java
   R文件的生成
   编译的中间产物中，R有以下几种形式
      R.java (compileOnly)
-     R.txt 此project 所有资源列表，并生成了id，apk打包的时候会根据这个值生成这个Module的R.java
+     R.txt 此project 所有资源列表，并生成了id，apk打包的时候会根据这个值生成这个Module的R.java，这个会被打入到AAR中
      R-def.txt 记录了此project的本地资源（res下，不包含依赖）
-     package-aware-r.txt（记录了此project的所有资源，包含依赖，没有生成id）
+     package-aware-r.txt（记录了此project的所有资源，包含依赖，没有生成id） 中间产物
  
  当一个Module生成R.java的时候，首先会拿到所有依赖的R.txt  比如lib1 依赖lib2，lib2 依赖recyclerview-1.0.0.aar，那么lib1会拿到两个R.txt。
     lib2的R.txt已经生成好了
     AAR的R.txt是从AAR中解压出来的
-module拿到所有依赖的R.txt 后，会根据当前module的本地资源，生成package-aware-r.txt
+module拿到所有依赖的R.txt 后，会根据当前module的本地资源，生成package-aware-r.txt  （intermediates/res/symbol-table-with-package/debug/package-aware-r.txt）
 /// package-aware-r.txt 没有id
   com.example.lib1
      layout activit_in_lib2
      string string_from_lib1
      string string_from_lib2
-第一行package name，从AndroidManifest.xml中取的。 下面几行代表这个module中所有的资源，包括自己和依赖的别人的。 AGP会根据package-aware-r.txt生成R.txt
+第一行package name，从AndroidManifest.xml中取的。 下面几行代表这个module中所有的资源，包括自己和依赖的别人的。 
+
+
+AGP会根据package-aware-r.txt生成R.txt
    int layout activity_in_lib2 0x7f0e0001
    int string string_from_lib1 0x7f140002
    int string string_from_lib2 0x7f140003
