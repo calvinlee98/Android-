@@ -1,0 +1,96 @@
+Transform 是 Android Gradle Plugin 的概念，本意是希望在javac 与 dex之间插入一些task，操作java字节码 （其实本身dex 也是通过transform实现的）
+Transform 的核心有这几个：
+  1. Transform API 
+  2. TransformManager 
+  3. Transform 的 task
+
+API
+    @NonNull
+    public abstract Set<ContentType> getInputTypes();
+    
+    @NonNull
+    public abstract Set<? super Scope> getScopes();
+    
+    public void transform(@NonNull TransformInvocation transformInvocation)
+            throws TransformException, InterruptedException, IOException {
+        // Just delegate to old method, for code that uses the old API.
+        //noinspection deprecation
+        transform(transformInvocation.getContext(), transformInvocation.getInputs(),
+                transformInvocation.getReferencedInputs(),
+                transformInvocation.getOutputProvider(),
+                transformInvocation.isIncremental());
+    }
+getInputTypes 是决定transform的输入类型  一般我们如果想要修改 class 就传入TransformManager.classes
+getScopes 是决定输入的范围  我们一般传  TransformManager.SCOPE_FULL_PROJECT  这个代表全局，输入包括project、subproject和 external_librarys
+public static final Set<Scope> SCOPE_FULL_PROJECT =
+            Sets.immutableEnumSet(
+                    Scope.PROJECT,
+                    Scope.SUB_PROJECTS,
+                    Scope.EXTERNAL_LIBRARIES);
+ 
+ transform(TransformInvocation invocation) 这个就是真正的transform
+ 
+ 
+ TransformOutputProvider  这个代表的是transform的输出  在transform的时候，没有一个固定的输出地址，我们是根据name、types、scopes和format返回一个地址
+File getContentLocation(
+            @NonNull String name,
+            @NonNull Set<QualifiedContent.ContentType> types,
+            @NonNull Set<? super QualifiedContent.Scope> scopes,
+            @NonNull Format format);
+            
+  我们可以简单看一下这个方法
+  
+  /// TransformOutputProviderImpl.java
+      @NonNull
+    @Override
+    public File getContentLocation(
+            @NonNull String name,
+            @NonNull Set<QualifiedContent.ContentType> types,
+            @NonNull Set<? super QualifiedContent.Scope> scopes,
+            @NonNull Format format) {
+        return folderUtils.getContentLocation(name, types, scopes, format);
+    }
+    
+   /// IntermediateFolderUtils.java
+    File rootFolder;
+    List<SubStream> subStreams;
+   
+    @NonNull
+    public synchronized File getContentLocation(
+            @NonNull String name,
+            @NonNull Set<ContentType> types,
+            @NonNull Set<? super Scope> scopes,
+            @NonNull Format format) {
+        // runtime check these since it's (indirectly) called by 3rd party transforms.
+        checkNotNull(name);
+        checkNotNull(types);
+        checkNotNull(scopes);
+        checkNotNull(format);
+        checkState(!name.isEmpty());
+        checkState(!types.isEmpty());
+        checkState(!scopes.isEmpty());
+
+        // search for an existing matching substream.
+        for (SubStream subStream : subStreams) {
+            // look for an existing match. This means same name, types, scopes, and format.
+            if (name.equals(subStream.getName())
+                    && types.equals(subStream.getTypes())
+                    && scopes.equals(subStream.getScopes())
+                    && format == subStream.getFormat()) {
+                return new File(rootFolder, subStream.getFilename());
+            }
+        }
+
+        // didn't find a matching output. create the new output
+        SubStream newSubStream = new SubStream(name, nextIndex++, scopes, types, format, true);
+
+        subStreams.add(newSubStream);
+
+        return new File(rootFolder, newSubStream.getFilename());
+    }
+    
+    /// 首先找一个name match的SubStream   如果没有的话，就创建一个 我们打开intermediates/transform/xxx/debug/0.jar 发现目录下的文件都是0.jar,1.jar 或者/0  /1 这种，其实这个也是符合预期的。
+    
+    Transform 大概的API我们过了一下  但是这里我们留了几个空
+      1. TransformInvocations.consumedInputs 必须要输出
+      2. Stream到底是什么东西 后面我们回再简单的过一下
