@@ -1,0 +1,259 @@
+TransformManager 原理
+Manages the transforms for a variant. 
+
+我们自定义一个Transform的时候，需要复写getInputTypes 和 getScope 方法，一般我们不需要自己写一个Set，TransformManager 已经给我们定义好了一些常用的
+    public static final Set<ContentType> CONTENT_CLASS = ImmutableSet.of(CLASSES);
+    public static final Set<Scope> SCOPE_FULL_PROJECT =
+            Sets.immutableEnumSet(
+                    Scope.PROJECT,
+                    Scope.SUB_PROJECTS,
+                    Scope.EXTERNAL_LIBRARIES);
+                    
+ 
+ // These are the streams that are avaliable for new Transforms to consume.
+ // Once a new stream is added, the streams that it consumes are removed and the stream it produces are put instead.
+ // When all the transforms have been added, the remaining streams should be consumed by standard Tasks somehow.
+   
+   @NonNull private final List<TransformStream> streams = Lists.newArrayList();
+   
+这个字端很重要，这个保存了当前所有的TransformStream， 
+当我们添加一个Stream的时候，我们会把这个Transform consume的Stream从list中移除，并将这个Transform 的outputStream添加到streams中去，
+这其实也就回答了一个问题，为什么transformInputs 中所有的输入一定都要有输出（不然一定会有ClassNotFound 或者 资源找不到） 
+
+接下来我们过一遍registerTransform的流程
+/// TaskManager 
+ for (int i = 0, count = customTransforms.size(); i < count; i++) {
+            Transform transform = customTransforms.get(i);
+
+            List<Object> deps = customTransformsDependencies.get(i);
+            transformManager.addTransform(
+                    taskFactory,
+                    variantScope,
+                    transform,
+                    null,
+                    task -> {
+                        if (!deps.isEmpty()) {
+                            task.dependsOn(deps);
+                        }
+                    },
+                    taskProvider -> {
+                        // if the task is a no-op then we make assemble task depend on it.
+                        if (transform.getScopes().isEmpty()) {
+                            TaskFactoryUtils.dependsOn(
+                                    variantScope.getTaskContainer().getAssembleTask(),
+                                    taskProvider);
+                        }
+                    });
+        }
+ 在TaskManager 创建AGP 相关的task的时候，会拿到所有的自定义Transforms，并调用transformManager.addTransform 
+ 
+ /// TransformManager addTransforms 
+    @NonNull
+    public <T extends Transform> Optional<TaskProvider<TransformTask>> addTransform(
+            @NonNull TaskFactory taskFactory,
+            @NonNull VariantScope scope,
+            @NonNull T transform,
+            @Nullable PreConfigAction preConfigAction,
+            @Nullable TaskConfigAction<TransformTask> configAction,
+            @Nullable TaskProviderCallback<TransformTask> providerCallback) {
+
+        if (!validateTransform(transform)) {
+            // validate either throws an exception, or records the problem during sync
+            // so it's safe to just return null here.
+            return Optional.empty();
+        }
+
+        if (!transform.applyToVariant(new VariantInfoImpl(scope))) {
+            return Optional.empty();
+        }
+
+        List<TransformStream> inputStreams = Lists.newArrayList();
+        /// task Name 
+        String taskName = scope.getTaskName(getTaskNamePrefix(transform));
+
+        // get referenced-only streams
+        List<TransformStream> referencedStreams = grabReferencedStreams(transform);
+
+        /// 这个方法很重要，会根据transform.getInputTypes 和 transform.getScope 计算出input streams
+        // find input streams, and compute output streams for the transform.
+        IntermediateStream outputStream = findTransformStreams(
+                transform,
+                scope,
+                inputStreams,
+                taskName,
+                scope.getGlobalScope().getBuildDir());
+
+        if (inputStreams.isEmpty() && referencedStreams.isEmpty()) {
+            // didn't find any match. Means there is a broken order somewhere in the streams.
+            issueReporter.reportError(
+                    Type.GENERIC,
+                    new EvalIssueException(
+                            String.format(
+                                    "Unable to add Transform '%s' on variant '%s': requested streams not available: %s+%s / %s",
+                                    transform.getName(),
+                                    scope.getFullVariantName(),
+                                    transform.getScopes(),
+                                    transform.getReferencedScopes(),
+                                    transform.getInputTypes())));
+            return Optional.empty();
+        }
+
+        //noinspection PointlessBooleanExpression
+        if (DEBUG && logger.isEnabled(LogLevel.DEBUG)) {
+            logger.debug("ADDED TRANSFORM(" + scope.getFullVariantName() + "):");
+            logger.debug("\tName: " + transform.getName());
+            logger.debug("\tTask: " + taskName);
+            for (TransformStream sd : inputStreams) {
+                logger.debug("\tInputStream: " + sd);
+            }
+            for (TransformStream sd : referencedStreams) {
+                logger.debug("\tRef'edStream: " + sd);
+            }
+            if (outputStream != null) {
+                logger.debug("\tOutputStream: " + outputStream);
+            }
+        }
+
+        transforms.add(transform);
+
+        // create the task...
+        return Optional.of(
+                taskFactory.register(
+                        new TransformTask.CreationAction<>(
+                                scope.getFullVariantName(),
+                                taskName,
+                                transform,
+                                inputStreams,
+                                referencedStreams,
+                                outputStream,
+                                recorder),
+                        preConfigAction,
+                        configAction,
+                        providerCallback));
+    }
+    
+    
+   /**
+     * Finds the stream the transform consumes, and return them.
+     *
+     * <p>This also removes them from the instance list. They will be replaced with the output
+     * stream(s) from the transform.
+     *
+     * <p>This returns an optional output stream.
+     *
+     * @param transform the transform.
+     * @param scope the scope the transform is applied to.
+     * @param inputStreams the out list of input streams for the transform.
+     * @param taskName the name of the task that will run the transform
+     * @param buildDir the build dir of the project.
+     * @return the output stream if any.
+     */
+     
+    /// 找到transforms 的inputs  放入到List<TransformStream> inputStreams中
+    /// 将 input streams 从 TransformManager.transformStreams中移除
+    /// 拿到一个output stream，添加到TransformManager.transformStreams中
+    @Nullable
+    private IntermediateStream findTransformStreams(
+            @NonNull Transform transform,
+            @NonNull TransformVariantScope scope,
+            @NonNull List<TransformStream> inputStreams,
+            @NonNull String taskName,
+            @NonNull File buildDir) {
+
+        /// Transform # getScopes
+        Set<? super Scope> requestedScopes = transform.getScopes();
+        if (requestedScopes.isEmpty()) {
+            // this is a no-op transform.
+            return null;
+        }
+
+        /// Transform # getInputTypes
+        /// find & remove
+        Set<ContentType> requestedTypes = transform.getInputTypes();
+        consumeStreams(requestedScopes, requestedTypes, inputStreams);
+
+        // create the output stream.
+        // create single combined output stream for all types and scopes
+        Set<ContentType> outputTypes = transform.getOutputTypes();
+
+       /// build/intermediates/transforms/rMerge/debug
+        File outRootFolder =
+                FileUtils.join(
+                        buildDir,
+                        StringHelper.toStrings(
+                                AndroidProject.FD_INTERMEDIATES,
+                                FD_TRANSFORMS,
+                                transform.getName(),
+                                scope.getDirectorySegments()));
+
+        // create the output
+        IntermediateStream outputStream =
+                IntermediateStream.builder(
+                                project,
+                                transform.getName() + "-" + scope.getFullVariantName(),
+                                taskName)
+                        .addContentTypes(outputTypes)
+                        .addScopes(requestedScopes)
+                        .setRootLocation(outRootFolder)
+                        .build();
+        // and add it to the list of available streams for next transforms.
+        /// replace 
+        streams.add(outputStream);
+
+        return outputStream;
+    }
+    
+    outputStream 其实是一个IntermediateStream 类型
+    这个outputStream最终会被加入到 TransformManager.streams 中
+    
+    在上一节中，我们通过TransformOutputProvider 拿到 outputLocation的时候，添加了一个SubStream。 我们大概看一下 IntermediateStream和Substream是怎么关联起来的
+    
+    @Override
+    @NonNull
+    FileCollection getOutputFileCollection(@NonNull Project project, @NonNull StreamFilter streamFilter) {
+        // create a collection that only returns the requested content type/scope,
+        // and contain the dependency information.
+
+        // the collection inside this type of stream cannot be used as is. This is because it
+        // contains the root location rather that the actual inputs of the stream. Therefore
+        // we need to go through them and create a single collection that contains the actual
+        // inputs.
+        // However the content of the intermediate root folder isn't known at configuration
+        // time so we need to pass a callable that will compute the files dynamically.
+        Callable<Collection<File>> supplier =
+                () -> {
+                    // If the task has not been executed, return an empty list; otherwise, gradle
+                    // will try to resolve the output files before task execution.
+                    // TaskState::getExecuted below will return true if task was executed or if it
+                    // is UP_TO_DATE, FROM_CACHE, SKIPPED, or NO_SOURCE.
+                    if (!project.getTasks().getByName(taskName).getState().getExecuted()) {
+                        return ImmutableList.of();
+                    }
+                    init();
+                    return folderUtils.getFiles(streamFilter);
+                };
+
+        return project.files(supplier).builtBy(getFileCollection().getBuildDependencies());
+    }
+    
+    @NonNull
+    public Collection<File> getFiles(@NonNull StreamFilter streamFilter) {
+        List<File> files = Lists.newArrayListWithExpectedSize(subStreams.size());
+        for (SubStream stream : subStreams) {
+            if (streamFilter.accept(stream.getTypes(), stream.getScopes())) {
+                files.add(new File(rootFolder, stream.getFilename()));
+            }
+        }
+
+        return files;
+    }
+    OK这样就串起来了
+    
+    
+    
+    重新整理一下语言，TransformManager 是全局的Transform 管理者，管理了一个variant所有的transform，在AGP task manager创建 Android 打包相关的task 的时候，会拿到所有的自定义Transforms，并给每个Transform
+    添加一个任务
+    Transform在执行的时候， 有两个概念 input 和 output。  这两个其实都是在transform task添加的时候算出来的  核心的概念是stream
+    TransformManager 有个关键字端 List<IntermediateTransformStream>   这个东西其实保存了下个transform在添加的时候需要consume 的 inputs 在 添加transform的时候，我们会根据transform 的input 和 scope 拿到这个
+    transform 的 inputs 算一个OutputStream 并将这个OutputStream 添加到streams 里面（作为下一个transform的输入） 这样 其实各个transform之间就连起来了。  
+    这其实也就解释了 为什么每个transform 的inputs 都要输出到 output stream中 （也就是 通过transform output provider拿到的地址去）。因为这个东西还要被后面的transform使用。  否则会有class not found 或者 
