@@ -126,5 +126,7 @@ offset  bytes      description
   
 V1 签名 只会校验第一部分 而EOCD的注释字端不会被校验，所以我们可以把渠道号写到EOCD的comment中
 
+后续我们会讨论V2签名方式和V2 多渠道包方案
+
 
    
