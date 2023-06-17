@@ -1,0 +1,130 @@
+背景  国内Android 应用分发市场的现状，我们在发布app的时候，一般需要打多个渠道包，上传到不同的应用市场。 每个渠道包需要包含渠道信息，在埋点的时候，我们把渠道信息作为工参，就能对比每个应用市场的下载数、用户数等关键信息，进行
+核心用户价值分析
+
+官方方案
+productFlavors
+
+AndroidManifest.xml
+<meta-data
+  android:name="ChannelData" android:value="${ChannelData}"/>
+
+android {
+   flavorDimensions "channel"
+    productFlavors {
+        common {
+           dimension "channel
+        }
+        xiaomi {
+            minSdkVersion '21'
+            versionCode 20000 + android.defaultConfig.versionCode
+            versionNameSuffix "-minApi21"
+            dimension "channel"
+            manifestPlaceholders = ["ChannelData" : "Huawei Meta Data",
+                                    "AppIcon": "@mipmip/ic_launcher",
+                                    "MainActivity": "HWActivity"
+        }
+        huawei {
+           minSdkVersion '23'
+           versionCode 20000 + android.defaultConfig.versionVode
+           versionNameSuffix "-minApi23"
+           manifestPlaceholders = ["ChannelData" : "XiaoMi Meta Data",
+                                   "AppIcon" : "@mipmap/ic_launcher".,
+                                   "MainActivity": "XMAcitivity"]
+           dimension "channel"
+        }
+    }
+   
+}
+
+官方方案的好处是可以对代码、资源、依赖、配置等更多维度进行深度定制，但缺点是打包速度变慢，Android Gradle plugin 在创建打包任务的时候是根据variant scope 维度的，也就是每个variant 都会有一套对应的打包任务，
+如果我们productFlavors 有两个（xiaomi，huawei）  buildType 有两个（debug，release），那么打多渠道包的时候有四个variant，也就是说要打四个apk
+
+另一种方案 使用ApkTool 
+反解 ApkTool， 修改AndroidManifest，再重新打APK，流程
+1.copy APK 文件
+2.ApkTool 解压 apk
+3.删除已有签名信息
+4.添加渠道信息（修改AndroidManifest.xml）
+5.ApkTool重新打包
+6.重新签名
+
+另一种方案  直接操作APK文件 不需要重新签名  那么我们先过一下APK签名
+数字摘要（数据指纹）？
+对信息进行提取，无论数据多长，数据摘要的长度固定，MD5 算出来的数据就是128bit。 一般情况下，主要原始数据不同，那么数据摘要就应该不同。 是一种不可逆算法（无法根据数据摘要逆推出内容）
+常见的数据摘要算法有 MD5 和 SHA系列算法
+
+数字签名？数字证书？
+数字签名和数字证书成对出现。 数字签名主要用来校验数据的完整性，数字证书主要用来确保公钥的安全发放）
+数据的安全传输有两个问题
+1. 确定数据的来源是真正的发送者
+2. 确保数据在传输过程中，没有被篡改
+
+首先，数据的发送者需要申请一对公私钥对，并将公钥交给数据的接收者。 然后，发送者发送数据的时候，首先需要生成一份数字签名，然后把原始数据和数字签名一块发送给接收者
+数字签名由以下两步获得
+1.计算原始数据的数字摘要
+2.用私钥对数字摘要进行加密
+
+这样，接收者就收到了两份内容
+1. 原始数据
+2.数字签名
+
+接收者校验数据的真实性
+1.用相同的摘要算法对原始数据计算数字摘要
+2.用公钥对数字签名进行解密
+3.对比签名是否一致，如果一致，那么没有被篡改
+
+
+公钥的安全，靠数字证书
+数字证书的发布，靠证书中心（CA）。包含了：证书的发布机构、证书的有效期、申请者的公钥、申请者信息、数字签名使用的算法 + 证书内容的数字签名
+现在，发送者发送的信息应该包含3部分
+1.原始数据
+2.数字签名
+3.数字证书
+
+接收者拿到数据后，先根据CA的公钥，解码发送者的公钥，再对数字签名解密，对原始内容做数字摘要，对比
+
+
+
+
+Apk V1 V2 签名
+META-INF目录下，有三个文件：MANIFEST.MF、CERT.SF、CERT.RSA  它们都是V1 签名的产物
+V1 APK 签名流程  SignApk.java
+1. 计算每个原始文件的数据摘要，然后计算出该数字摘要的Base64，存放在MANIFES.SF文件中
+2. 计算MANIFEST.SF 文件的数字摘要Base64编码，保存到CERT.SF 文件的主属性
+3. 计算MANIFEST.SF 文件每个数据块的数字摘要的Base64编码 记录到CERT.SF 对应的区块中
+4. 计算CERT.SF 的数据摘要，然后通过开发者的私钥计算数字签名，把数字签名+包含开发者公钥信息的数字证书（CA）一起保存到CERT.RSA文件中 
+
+
+V1签名校验
+PackageManagerService -> PackageParser 
+1. 通过CA公钥解密 CERT.RSA 中的数字证书，获取开发者的公钥和对CERT.SF文件的数字签名 （CERT.RSA文件中）
+2. 通过开发者公钥解密数字签名，校验CERT.SF文件是否被篡改
+3. 通过CERT.SF文件的主属性校验MANIFEST.MF文件整体是否被篡改
+4. 通过CERT.SF校验MANIFEST.MF文件中的区块是否被篡改
+5. 通过MANIFEST.MF文件区块校验APK中的每个原始文件是否被篡改
+
+
+APK文件结构 APK就是ZIP文件格式  主要有三部分
+1. 内容块，所有的压缩文件在这部分，每个压缩文件都有一个local file header，包含文件名、压缩算法、压缩前后文件的大小、修改时间、CRC32值
+    Local file header1
+    file data1 
+    data descriptor 1
+2. 中央目录
+  包含多个 central directory file header，和第一部分的local file header 一一对应
+3. 最后一部分是DOCD，主要包含了中央目录大小、偏移量、ZIP注释信息等
+
+offset  bytes      description
+0        4         0x06054b50
+4        2.         Number of this disk
+6.       2.         Disk where central directory starts
+8.       2.         Number of central director records
+12.      4.         Size of central diretory (bytes)
+16.      4.         Offset of start of central directory,relative to start of archive
+20.      2.         Comment lenghth
+22       n          comment
+
+  
+V1 签名 只会校验第一部分 而EOCD的注释字端不会被校验，所以我们可以把渠道号写到EOCD的comment中
+
+
+   
