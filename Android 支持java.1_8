@@ -1,0 +1,65 @@
+1. java代码的编译流程
+
+xxxActivity.java           xxxActivity.class
+xxxService.java      javac=>    xxxService.class     dx=>    classes.dex
+xxxReceiver.java           xxxReceiver.class
+
+在java 8中，lambda表达式的实现引入了字节码指令 invokedinamic，  dex工具无法处理invokedinamic指令，导致Android不支持java8
+
+所以我们需要对.class文件进行脱糖（desugar
+
+.java  javac=>  .class  (desugar)=>  .class(desugared)  (dx)=>  dex 
+
+
+
+1. 插件RetroLambda
+
+buildscript{
+   repositories{
+       mavenCentral()
+   }
+   dependencies{
+      classpath 'me.tatarka:gradle-retrolambda:3.7.1' 
+   }
+
+}
+
+apply plugin: 'me.tatarak.retrolambda'
+
+retrolambda{
+    javaVersion JavaVersion.VERSION_1_7  /// set the java  version to compile to
+    jvmArgs '-arg1',  '-arg2'
+    defaultMethods false  
+    incremental true
+}
+
+大概的原理其实是通过trasnform实现了 desugar，build/intermediates/transforms/retrolambda/$variant
+javaVersion JavaVersion.VERSION_1_7 会将class的 major version改成51
+对lambda表达式的实现 大概也是通过生成一个class
+public class J8Sample{
+
+  public J8Sample(){}
+
+  public static void main(String[]args){
+     Runnable runnable = J8Sample$$Lambda$1.lambdaFactory$();
+     (new Thread(runnable)).start();
+     (new Thread(J8Sample$$Lambda$Lambda$4.lambdaFactory$())),start();
+  }
+
+}
+可见 每个lambda表达式会生成一个class  名字为 xxx$$Lambda$1.class, xxx$$Lambda$2.class
+
+Android Jack&Jill 工具
+Jack 是基于Eclipse 的 ecj编译开发的，Jill是基于ASM4开发的。 Jack&Jill工具链是Google在Android 7.0发布，用于替换javac&dx工具链。  并且在jack中内置了desugar过程，但是
+Android9这个工具被废弃了，被javac&d8替代了
+
+
+使用d8进行desugar
+d8 是dx 的替代 
+Android studio版本         Android Gradle Plugin版本        变更
+ 3.1                           3.0.1                      引入了D8
+ 3.2                           3.2.0                     引入R8，D8的desugar 默认开启 
+ 3.4                           3.4.0                     默认开启R8
+
+
+
