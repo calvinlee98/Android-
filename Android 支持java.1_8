@@ -4,7 +4,7 @@ xxxActivity.java           xxxActivity.class
 xxxService.java      javac=>    xxxService.class     dx=>    classes.dex
 xxxReceiver.java           xxxReceiver.class
 
-在java 8中，lambda表达式的实现引入了字节码指令 invokedinamic，  dex工具无法处理invokedinamic指令，导致Android不支持java8
+在java 8中，lambda表达式的实现引入了字节码指令 invokedynamic，  dex工具无法处理invokedynamic指令，导致Android不支持java8
 
 所以我们需要对.class文件进行脱糖（desugar
 
