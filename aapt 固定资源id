@@ -1,0 +1,63 @@
+1. 为什么要固定资源id
+假设我们现在有两个String 资源
+<resources>
+    <string name="string_1">String 1</string>
+    <string name="string_2">String 2</string>
+</resources>
+
+在aapt的时候我们会生成R class
+package com.taobao.taobao;
+public class R {
+   public static final class string{
+       public static final int string_1 = 0x7f050000;
+       public static final int string_2 = 0x07f050001;
+   }
+}
+我们调用的时候 很简单 R.string.string_1
+
+假设我们现在需要构建一个插件包(apk) 我们需要R.string.string_1 还是可以找到String 1  但是apk中有资源的改动（其实都不需要资源的改动，id本身也是随机分配的）
+<resources>
+    <string name="string_1">String 1</string>
+    <string name="string_3">String 3</string>
+    <string name="string_2">String 2</string>
+</resources>
+ 那这个时候R.string.string_2 还能找到String 2吗？ 那肯定是不能的  所以我们在插件包中，需要对资源id进行固定（也就是和基准包对齐）
+2. aapt 如何对资源id进行固定
+   - 编译构建的时候 导出public.xml   additionalParams "-P", "${publicXmlFile}"
+   - 编译插件包的时候  使用这个public.xml 进行资源固定
+为什么我们在这用了使用 public.xml 这个用词， 因为具体的用法和Android Gradle Plugin的版本也有关
+当AGP 版本小于1.3 时，我们直接将这个public.xml 放到 res目录下面就可以
+AGP 版本大于等于1.3时，mergeResource的时候会忽略public.xml 所以 intermediates/merged/debug/res 下面并没有public.xml 文件  所以我们需要脚本手动做这件事（也就是把public.xml 
+拷贝一份到merge目录）
+project.afterEvaluate{
+  for (variant in android.applicationVariants){
+       def scope = variant.getVariantData().getScope()
+       String mergeTaskName = scope.getMergeResourcesTask().name
+       def mergeTask = tasks.getByName(mergeTaskName)
+       mergeTask.doLast{
+            copy{
+                  int i=0
+                  from(android.sourceSets.main.res.srcDirs){
+                      include 'values/public.xml'
+                      rename 'public.xml', (i++ ==0 ? "public.xml" : "public_$i.xml"
+                  }
+                  into(mergeTask.outputDir)
+            }
+       }
+  }
+}
+3. aapt2 如何进行资源固定
+--emit-ids path   
+   Emits a file at the given path with a list of names of resource types and their ID mappings. This is suitable to use with --stable-ids.
+--stable-ids outputfilename.ext 
+     Consumes the file generated with --emit-ids containing the list of names of resource types and their assigned IDs.
+This option allows assigned IDs to remain stable even when you delete or add new resources while linking.
+ 其实aapt2 只需要两个指令 一个是 --emit-ids  --emit-ids "${project.file("public.txt")  这样会生成一个txt 内容是 name，type和id
+再在打插件包的时候使用 --stable-ids "${project.file("public.txt")}  这样插件包的资源id就会和基线包一致
+
+4. 为什么直接将public.xml 复制到merged/res/debug目录下不行？
+因为aapt2 分成两个阶段，第一个阶段是编译，第二个阶段是链接。 编译阶段会生成资源的中间文件，values目录下的xml会生成.arsc.xml  其他资源会生成.xml
+所以如果我们平白无故拷贝一个 public.xml到merged/res/debug 目录下，aapt2 是链接不了这个资源的。
+那我们换一种思路，将public.xml 编译一下， 输出到目录下可行吗？
+答案是可行的。  那么aapt 和aapt2 对资源的处理就打通了
+aapt2 compile res/values/public.xml -o intermediates/merged/res/debug/
