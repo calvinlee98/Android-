@@ -3,6 +3,7 @@ dependencies{
   implementation 'com.taobao.android:liveroom-universal-android:3.10.0.7241047" 
 }
 implementation 其实就是一个configuration
+Configuration 的作用是让依赖在不同的范围内使用，比如有些依赖需要在运行时生效，有些依赖只需要编译。
 官方文档对Configuration的介绍是
 A configuration represetns a group of artifacts and their dependencies.  Every dependency declared for a gradle project applies to a specific scope. For example some dependencies 
 should be used for compiling source code wheras other only need to be avaliable at runtime. Gradle represents the scope of a dependency with the help of a Configuration.
@@ -43,3 +44,32 @@ compileClasspath 和 runtimeClasspath是可以被解析的Configuration
    Bucket of dependencies               false                  false
     Resolve for certain usage            true                  false
    Exposed to consumers                  false                 true
+
+当gradle 要 resolve 一个module的时候，它会尝试找metadata 文件或者默认的artifact（jar）  如果这两个都没有，那么resolve就会失败。
+但是有些时候我们并不是需要下载一个jar ，假设有以下几种情况
+  1. repository 下的这个module只有一个非标准的artifact（比如.zip, .aar, .apk)
+  2. metadata 声明了多种artifact 比如上传一个apk的时候，artifact包括（dependencies.txt,  app.apk,  R.txt用于id固定， classes.jar) 
+  3. 在下载这个依赖的时候，我只想下载一个特定的artifact
+repositories {
+    ivy {
+          url 'https://ajax.googleapis.com/ajax/libs'
+    }
+     patternLayout {
+          artifact '[organization]/[revision]/[module].[ext]'
+     }
+     metadataSources {
+          artifact()
+     }   
+}
+configurations {
+    js
+}
+dependencies {
+      js 'jquery:jquery:3.2.1@js'
+}
+
+
+gradle 支持的metadata formats包括
+1. Grale Module Metadata files
+2. Pom files （常见的）
+3. Ivy files
