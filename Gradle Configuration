@@ -3,11 +3,11 @@ dependencies{
   implementation 'com.taobao.android:liveroom-universal-android:3.10.0.7241047" 
 }
 implementation 其实就是一个configuration
-Configuration 的作用是让依赖在不同的范围内使用，比如有些依赖需要在运行时生效，有些依赖只需要编译。
 官方文档对Configuration的介绍是
 A configuration represetns a group of artifacts and their dependencies.  Every dependency declared for a gradle project applies to a specific scope. For example some dependencies 
 should be used for compiling source code wheras other only need to be avaliable at runtime. Gradle represents the scope of a dependency with the help of a Configuration.
 大概意思就是gradle 项目的依赖是有范围的（scope） 有些依赖需要在编译的时候被使用，有些依赖只在runtime阶段被使用。 这个范围也就是scope
+configuration 大方向上来讲有两个角度，一个是依赖的容器，也就是管理dependencies  另一方面是artifacts的容器，管理artifacts
 
 Configuration是有继承关系的
 A configuration can extend other configurations to form an inheritance hierarchy. Child configurations inherit the whole set of dependencies declared for any of its superconfigurations.
@@ -70,6 +70,6 @@ dependencies {
 
 
 gradle 支持的metadata formats包括
-1. Grale Module Metadata files
-2. Pom files （常见的）
+1. Grale Module Metadata files （.module)
+2. Pom files （常见的）   .pom 文件
 3. Ivy files
