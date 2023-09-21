@@ -6,8 +6,9 @@ implementation 其实就是一个configuration
 官方文档对Configuration的介绍是
 A configuration represetns a group of artifacts and their dependencies.  Every dependency declared for a gradle project applies to a specific scope. For example some dependencies 
 should be used for compiling source code wheras other only need to be avaliable at runtime. Gradle represents the scope of a dependency with the help of a Configuration.
-大概意思就是gradle 项目的依赖是有范围的（scope） 有些依赖需要在编译的时候被使用，有些依赖只在runtime阶段被使用。 这个范围也就是scope
-configuration 大方向上来讲有两个角度，一个是依赖的容器，也就是管理dependencies  另一方面是artifacts的容器，管理artifacts
+大概意思：
+  gradle 的configuration 用于管理 dependencies和artifacts 我们先讲dependency。  依赖是有使用范围的（scope），比如有的依赖可以在compile阶段使用，有的依赖应该在runtime阶段使用。 这就对应了不同的configuration （runtimeClasspath/ compileClasspath）
+其次就是对artifacts的管理 （这个一般在configuration的consume时使用，比如我们常常使用的implementation project(':a') 其实就是在使用  project a的 default 这个configuration下管理的artifacts，这个我们之后讨论）
 
 Configuration是有继承关系的
 A configuration can extend other configurations to form an inheritance hierarchy. Child configurations inherit the whole set of dependencies declared for any of its superconfigurations.
@@ -19,57 +20,102 @@ Configuration 其实有三个角色
 2. as a consumer, to resolve a set of dependencies to files （将依赖解析为FileCollection，作为消费者）
 3. as a producer, to expose artifacts and their dependencies for consumption by other projects  (被生产者使用，公开其管理的artifacts和dependencies）
 
-canBeResolved flag?
-A configuration that can be resolved is a configuration for which we can compute a dependency graph, because it contains all the necessary information for resolution to happen/
-一个canBeResolved的configuration 可以被解析成一个依赖图 dependency graph.  对canBeResolved的configuration，我们的目的是compute a dependency graph, resolve the components in the graph, and eventually
-get artifacts.  如果一个configuration 不能被resolve，那么它的角色只是声明依赖。 这有点像abstract class（canBeResolved = false） 和 concrete class （canBeResolved = true） 
+我们逐条解析这三个角色
+1. dependency container（依赖容器）
+  canBeResolved  = false
+  canBeConsumed = false
+其实canBeConsumed 这条不是很重要， 符合这个角色的典型configuration就是implementation 
+afterEvaluate {
+   def config = getConfigurations().getByName("implementation")
+   println config.isCanBeConsumed /// false 
+   println config.isCanBeResolved /// false
+}
+其实implementation 这个configuration 可以理解为就是一个依赖的容器， 我们用它管理一组依赖，并被别的configuration extend（继承）
+我们可以简单看下implementation 这个configuration 是怎么被使用的 
+VariantScopeImpl#computeArtifactCollection -> getConfiguration()
 
-canBeConsumed flag？
-举个例子，我们现在有个library project （lib） 它是一个java library
-configurations {
-   someConfiguration
-}
-dependencies{
-   someConfiguration project(':lib')
-}
-configurations {
-   compileClasspath.extendsFrom(someConfiguration)
-   runtimeClasspath.extendsFrom(someConfiguration)
-}
-someConfiguration 是一个依赖的桶
-compileClasspath 和 runtimeClasspath是可以被解析的Configuration 
-在lib角度（producer）   我们用configurations来声明哪些是可以被consumed的   举个例子，lib library 会暴露API/ runtime  如果我们需要依赖lib 编译，那么我们需要lib的API。 这个时候lib 需要暴露
-一个 apiElements 的configuration 让consumer来查找它的API  
-  Configuration Role                  canBeResolved        canBeConsumed
-   Bucket of dependencies               false                  false
-    Resolve for certain usage            true                  false
-   Exposed to consumers                  false                 true
+case RUNTIME_CLASSPATH:
+                return getVariantDependencies().getRuntimeClasspath();
 
-当gradle 要 resolve 一个module的时候，它会尝试找metadata 文件或者默认的artifact（jar）  如果这两个都没有，那么resolve就会失败。
-但是有些时候我们并不是需要下载一个jar ，假设有以下几种情况
-  1. repository 下的这个module只有一个非标准的artifact（比如.zip, .aar, .apk)
-  2. metadata 声明了多种artifact 比如上传一个apk的时候，artifact包括（dependencies.txt,  app.apk,  R.txt用于id固定， classes.jar) 
-  3. 在下载这个依赖的时候，我只想下载一个特定的artifact
-repositories {
-    ivy {
-          url 'https://ajax.googleapis.com/ajax/libs'
+runtimeClasspath.setExtendsFrom(runtimeClasspaths);
+
+ final Configuration implementationConfig = configs.getByName(sourceSet.getImplementationConfigurationName());
+                compileClasspaths.add(implementationConfig);
+                runtimeClasspaths.add(implementationConfig);
+
+我们实际在执行一些打包任务的时候，比如merge resources，process resources的时候，使用的configuration 就是 runtimeClasspath，我们可以看到这个runtimeClasspath最终继承 implementation
+
+
+
+2. resolve a set of dependencies to files 
+说到这个 先来个调用的例子  
+configuration.getIncoming().getArtifacts().getArtifactFiles().getFiles()
+0 = {File@9556} "/Users/lifangzheng/.gradle/caches/modules-2/files-2.1/com.android.support/design/28.0.0/bef882d1796b085fa89a5f1cec42a8edd2351e6c/design-28.0.0.aar"
+1 = {File@9557} "/Users/lifangzheng/.gradle/caches/modules-2/files-2.1/com.android.support.constraint/constraint-layout/2.0.4/7b791c577771fdfa227889645a563ef2b3e75a93/constraint-layout-2.0.4.aar" ...
+这个就是一个很标准的  将一组依赖解析成一组文件（artifacts）
+Configuration.getIncoming() 返回的就是 ResolvableDependencies 也就是解析成功的依赖
+我们也可以通过代码调用解析结果 
+
+/// configuration.getIncoming().getDependencies()
+0 = {DefaultExternalModuleDependency_Decorated@9657} "DefaultExternalModuleDependency{group='com.android.support', name='design', version='28.0.0', configuration='default'}"
+1 = {DefaultExternalModuleDependency_Decorated@9658} "DefaultExternalModuleDependency{group='com.android.support.constraint', name='constraint-layout', version='2.0.4', configuration='default'}"
+
+3. expose artifacts and dependencies to consumer
+要正确的理解这一点 还要通过一个project 依赖说起， 我们在app module下声明
+implementation project(':libraryA')
+先说结果，大家应该都知道，这样我们在编译apk时候，依赖libarayA的产物，这一点是怎么做到的呢？
+首先我们写一个implementation project(':libraryA') 的完成版， 也就是implementation project(':library', configuration:'default'), 最终这条依赖的实现类是DefaultProjectDependency
+      @Override
+    public Configuration findProjectConfiguration() {
+        /// getDependencyProject() 返回的是 libraryA 
+        ConfigurationContainer dependencyConfigurations = getDependencyProject().getConfigurations();
+        //// 返回default
+        String declaredConfiguration = getTargetConfiguration();
+        Configuration selectedConfiguration = dependencyConfigurations.getByName(GUtil.elvis(declaredConfiguration, Dependency.DEFAULT_CONFIGURATION));
+        if (!selectedConfiguration.isCanBeConsumed()) {
+            throw new ConfigurationNotConsumableException(dependencyProject.getDisplayName(), selectedConfiguration.getName());
+        }
+        return selectedConfiguration;
     }
-     patternLayout {
-          artifact '[organization]/[revision]/[module].[ext]'
-     }
-     metadataSources {
-          artifact()
-     }   
-}
-configurations {
-    js
-}
-dependencies {
-      js 'jquery:jquery:3.2.1@js'
-}
 
+   public TaskDependencyInternal getBuildDependencies() {
+        return new TaskDependencyImpl();
+    }
 
-gradle 支持的metadata formats包括
-1. Grale Module Metadata files （.module)
-2. Pom files （常见的）   .pom 文件
-3. Ivy files
+    private class TaskDependencyImpl extends AbstractTaskDependency {
+        @Override
+        public void visitDependencies(TaskDependencyResolveContext context) {
+            if (!buildProjectDependencies) {
+                return;
+            }
+            projectAccessListener.beforeResolvingProjectDependency(dependencyProject);
+
+            Configuration configuration = findProjectConfiguration();
+            context.add(configuration);
+            context.add(configuration.getAllArtifacts());
+        }
+    }
+project dependency的artifacts 也就是这样被使用的，那么我们看一下 .aar 是怎么被添加的
+LibraryTaskManager.java  /// 我们调用./gradlew assembleDebug 对Android library来讲 真正打包的任务其实是 bundleDebug
+    private void createBundleTask(@NonNull VariantScope variantScope) {
+        TaskProvider<BundleAar> bundle =
+                taskFactory.register(new BundleAar.CreationAction(extension, variantScope));
+
+        TaskFactoryUtils.dependsOn(variantScope.getTaskContainer().getAssembleTask(), bundle);
+
+        // if the variant is the default published, then publish the aar
+        // FIXME: only generate the tasks if this is the default published variant?
+        if (extension
+                .getDefaultPublishConfig()
+                .equals(variantScope.getVariantConfiguration().getFullName())) {
+            VariantHelper.setupArchivesConfig(
+                    project, variantScope.getVariantDependencies().getRuntimeClasspath());
+
+            // add the artifact that will be published.
+            // it must be default so that it can be found by other library modules during
+            // publishing to a maven repo. Adding it to "archives" only allows the current
+            // module to be published by not to be found by consumer who are themselves published
+            // (leading to their pom not containing dependencies).
+            project.getArtifacts().add("default", bundle);
+        }
+    }
