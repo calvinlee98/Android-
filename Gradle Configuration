@@ -50,6 +50,7 @@ runtimeClasspath.setExtendsFrom(runtimeClasspaths);
 2. resolve a set of dependencies to files 
 说到这个 先来个调用的例子  
 configuration.getIncoming().getArtifacts().getArtifactFiles().getFiles()
+或者 configuration.getIncoming().getResolutionResult() 也可以拿到 dependencies resolve成 artifacts collection的结果
 0 = {File@9556} "/Users/lifangzheng/.gradle/caches/modules-2/files-2.1/com.android.support/design/28.0.0/bef882d1796b085fa89a5f1cec42a8edd2351e6c/design-28.0.0.aar"
 1 = {File@9557} "/Users/lifangzheng/.gradle/caches/modules-2/files-2.1/com.android.support.constraint/constraint-layout/2.0.4/7b791c577771fdfa227889645a563ef2b3e75a93/constraint-layout-2.0.4.aar" ...
 这个就是一个很标准的  将一组依赖解析成一组文件（artifacts）
