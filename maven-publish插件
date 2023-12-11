@@ -1,4 +1,11 @@
 maven-publish 插件
+
+
+The Maven Publish Plugin provides the ability to publish build artifacts to an Apache Maven repository.
+A module published to a Maven repository can be consumed by Maven, Gradle (see Declaring Dependencies) and other tools that understand the Maven repository format.
+You can learn about the fundamentals of publishing in Publishing Overview.
+使用maven-publish 插件 可以将产物发布到maven 仓库， 让maven 项目和gradle 项目可以使用 
+
 发布制品到Maven 仓库
 plugins {
    maven-publish
@@ -6,9 +13,10 @@ plugins {
 添加一个extension  publishin: PublishingExtension
 a container of named publications and a container of named repositories MavenPublication MavenArtifactRepository
 
-添加tasks
+添加的tasks
 generatePomFileForPubNamePublication
   创建一个POM file,路径名 build/publications/$pubName/pom-default.xml
+  POM文件:Project Object Model,  包含了这个Project的所有内容，包括GAV， Project本身的依赖等等。 一般maven项目是 pom.xml  也可以是.pom 文件，具体可以看 build/publications/$pubName/pom-default.xml
 publishPubNamePublicationToRepoNameRepository
   将pubName 的publication 发布到仓库 RepoName
 publishToMavenLocal
@@ -19,79 +27,46 @@ publish
 
 Publications
 一个Publication有四个要素
-1. component
+1. components
 2. custom artifact
 3. metadata
 4. POM file 的其他内容
 
 publishing {
    publications{ 
-       groupId = 'org.gradle.sample'
-       artifactId = 'library'
-       version = '1.1'
-       
-       /// 发布一个jar
-       from components.java  
+       maven(MavenPublication){
+             //// 实现类MavenPublication
+            version '1.0.0'
+             task sourceJar(type: Jar) {
+                classifier = 'source'
+                version = version
+                try {
+                    if (components.hasWithName("java")) {
+                        from sourceSets.main.allJava
+                    } else {
+                        from android.sourceSets.main.java.srcDirs
+                    }
+                } catch (Throwable e) {
+
+                }
+            }
+            //// artifact 自定义发布产物 支持文件 artifact 'xxx.aar'  支持归档Task 
+            artifact sourceJar
+            /// 编辑pom-default.xml 文件 也就是最终的Project的Pom文件 一般我们可以增加一些项目的依赖
+             pom.withXml {
+                    asNode().dependencies.'*'.each {
+                        if (it.scope.text() == 'runtime') {
+                            if (project.configurations.providedCompile.allDependencies.find { dep -> dep.name == it.artifactId.text() }) {
+                                it.scope*.value = 'provided'
+                            } else if (project.configurations.compile.allDependencies.find { dep -> dep.name == it.artifactId.text() }) {
+                                it.scope*.value = 'compile'
+                            }
+                        }
+                    }
+                }
+       }  
    }
 }
 
-高版本gradle 没有generatePomFileForPubNamePublication 问题
-用公司的maven-publish脚本的时候，发现有个问题，gradle版本升级之后，没有成功发布aar。
-发布aar的逻辑在下面
-project.afterEvaluate {
-
-    if (project.plugins.hasPlugin("com.taobao.android.library") || project.plugins.hasPlugin("com.android.library")) {
-        project.getRootProject().aarMap.add(project.name)
-    }
-
-    ext.isApplication = (project.plugins.hasPlugin("com.android.application")||project.plugins.hasPlugin("com.taobao.android.application") )
-
-    tasks.whenTaskAdded { task ->
-        if (task.name.startsWith("generatePomFileForMavenPublication")) {
-            task.doFirst {
-                project.publishing.publications.maven(MavenPublication) {
-                    if (!components.hasWithName("java") && !isApplication) {
-
-                        File f = file("${project.buildDir}/outputs/awb/${project.name}-release.awb");
-                        /// 发布release aar
-                        if (!f.exists()) {
-                            f = file("${project.buildDir}/outputs/aar/${project.name}-release.aar");
-                        }
-                        if (!f.exists()) {
-                            f = file("${project.buildDir}/outputs/awb/${project.name}-debug.awb");
-                        }
-                        发布debug aar
-                        if (!f.exists()) {
-                            f = file("${project.buildDir}/outputs/aar/${project.name}-debug.aar");
-                        }
-
-                        artifact f.getPath()
-                    }
-                }
-            }
-        }
-
-        if ( isApplication && !publishApk ) {
-            if (task.name.startsWith("publish")) {
-                task.setEnabled(false)
-            }
-        }
-    }
-}
-
-它的方式是注册了一个tasks.whenTaskAdded，当generatePomFileForMavenPublication 被添加到 tasks graph 的时候，操作 publications.maven，
-手动调用artifact aar，将aar作为发布的制品。
-打印一下依赖树
-+++ publishMavenPublicationToMavenRepository
-sourceJar
-generatePomFileForMavenPublication
----
-+++ publishMavenPublicationToMavenLocalRepository
-sourceJar
-generatePomFileForMavenPublication
----
-
-可以看到 publishMavenPublicationToMavenRepository 和 publishMavenPublicationToMavenLocalRepository 都dependens on
-generatePomFileForMavenPublication 这个任务 
 
 
