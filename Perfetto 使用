@@ -1,0 +1,15 @@
+最近做性能优化，需要看方法耗时。原先SDK提供的工具是systrace，但是最新下载的Android SDK中，systrace 已经被干掉了，官方取代的是perfetto
+其实trace包括两种
+  ftrace - 基于Linux内核事件
+  atrace - app进程内的trace 
+我们一般排查卡顿问题的时候，查的都是atrace。  工作的主要流程就是
+ - 通过 adb shell perfetto 指令生成trace文件
+ - 通过 adb pull 将trace文件拉到本地
+ - 通过perfetto.ui 打开并进行分析
+
+举个例子
+adb shell perfetto -t 10s -o /data/misc/perfetto-traces/trace -a com.taobao.taobao gfx view input wm am
+-t 10s 取样10秒
+-a com.taobao.taobao 取样包名淘宝的atrace
+-o 输出文件的目录
+gfx view input am wm sched freq 这些都是categories
